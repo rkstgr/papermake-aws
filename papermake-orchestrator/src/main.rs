@@ -24,7 +24,7 @@ async fn main() -> Result<(), Error> {
     let sqs_manager_ref = &sqs_manager;
 
     // no need to create a SQS Client for each incoming request, let's use a shared state
-    let handler_func_closure = |event: LambdaEvent<RenderingMessage>| async move { process_event(event, sqs_manager_ref).await };
+    let handler_func_closure = |event: LambdaEvent<Value>| async move { process_event(event, sqs_manager_ref).await };
     lambda_runtime::run(service_fn(handler_func_closure)).await?;
     Ok(())
 }
@@ -36,12 +36,10 @@ struct RenderingMessage {
     data: Value,
 }
 
-async fn process_event(event: LambdaEvent<RenderingMessage>, sqs_manager: &SQSManager) -> Result<(), Error> {
+async fn process_event(event: LambdaEvent<Value>, sqs_manager: &SQSManager) -> Result<(), Error> {
     
-    let rendering_message = RenderingMessage {
-        template_id: event.payload.template_id,
-        data: event.payload.data,
-    };
+    let rendering_message: RenderingMessage = serde_json::from_value(event.payload)?;
+
     // send our message to SQS
     sqs_manager
         .client
