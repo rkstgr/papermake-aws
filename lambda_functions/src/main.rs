@@ -1,12 +1,10 @@
-use aws_lambda_events::apigw::{ApiGatewayProxyRequest, ApiGatewayProxyResponse};
+use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
 use aws_lambda_events::encodings::Body;
-use aws_sdk_s3::{Client as S3Client, Error as S3Error};
-use aws_sdk_sqs::{Client as SqsClient, Error as SqsError};
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::env;
 use uuid::Uuid;
 
@@ -16,14 +14,6 @@ struct RenderRequest {
     data: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
-struct RenderResponse {
-    job_id: String,
-    status: String,
-    pdf_base64: Option<String>,
-    errors: Vec<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct RenderJob {
     job_id: String,
@@ -31,21 +21,24 @@ struct RenderJob {
     data: serde_json::Value,
 }
 
-async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<ApiGatewayProxyResponse, Error> {
+async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpResponse, Error> {
+
+    println!("event: {:?}", event);
+
     let templates_bucket = env::var("TEMPLATES_BUCKET")?;
     let results_bucket = env::var("RESULTS_BUCKET")?;
     let queue_url = env::var("QUEUE_URL")?;
 
     // Parse request body
-    let request: RenderRequest = serde_json::from_str(event.payload.body.as_ref().unwrap_or(&String::new()))?;
+    let request: RenderRequest = serde_json::from_str(event.payload.as_str().ok_or("Missing payload")?)?;
     
     // Generate unique job ID
     let job_id = Uuid::new_v4().to_string();
 
     // Create S3 and SQS clients
     let config = aws_config::load_from_env().await;
-    let s3_client = S3Client::new(&config);
-    let sqs_client = SqsClient::new(&config);
+    let s3_client = aws_sdk_s3::Client::new(&config);
+    let sqs_client = aws_sdk_sqs::Client::new(&config);
 
     // Create job message
     let job = RenderJob {
@@ -80,8 +73,9 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
     ) {
         Ok(result) => result,
         Err(e) => {
-            return Ok(ApiGatewayProxyResponse {
+            return Ok(ApiGatewayV2httpResponse {
                 status_code: 500,
+                headers: Default::default(),
                 body: Some(Body::Text(
                     json!({
                         "job_id": job_id,
@@ -90,14 +84,17 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
                     })
                     .to_string(),
                 )),
-                ..Default::default()
+                is_base64_encoded: false,
+                cookies: Default::default(),
+                multi_value_headers: Default::default(),
             });
         }
     };
 
     if let None = render_result.pdf {
-        return Ok(ApiGatewayProxyResponse {
+        return Ok(ApiGatewayV2httpResponse {
             status_code: 500,
+            headers: Default::default(),
             body: Some(Body::Text(
                 json!({
                     "job_id": job_id,
@@ -106,7 +103,9 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
                 })
                 .to_string(),
             )),
-            ..Default::default()
+            is_base64_encoded: false,
+            cookies: Default::default(),
+            multi_value_headers: Default::default(),
         });
     }
 
@@ -122,9 +121,10 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
         .await?;
 
     let pdf_base64 = BASE64_STANDARD.encode(pdf.as_slice());
-    // Return response
-    Ok(ApiGatewayProxyResponse {
+    
+    Ok(ApiGatewayV2httpResponse {
         status_code: 200,
+        headers: Default::default(),
         body: Some(Body::Text(
             json!({
                 "job_id": job_id,
@@ -134,7 +134,9 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
             })
             .to_string(),
         )),
-        ..Default::default()
+        is_base64_encoded: false,
+        cookies: Default::default(),
+        multi_value_headers: Default::default(),
     })
 }
 
