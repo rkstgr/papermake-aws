@@ -1,0 +1,46 @@
+variable "environment" {
+  description = "Environment name (e.g., dev, prod)"
+  type        = string
+}
+
+variable "project_name" {
+  description = "Name of the project"
+  type        = string
+}
+
+variable "templates_bucket_name" {
+  description = "Name of the S3 bucket for storing templates"
+  type        = string
+}
+
+variable "results_bucket_name" {
+  description = "Name of the S3 bucket for storing rendered PDFs"
+  type        = string
+}
+
+variable "queue_name" {
+  description = "Name of the SQS queue for PDF rendering jobs"
+  type        = string
+}
+
+variable "render_lambda_memory" {
+  description = "Memory allocation for the render Lambda function in MB"
+  type        = number
+  default     = 1024
+}
+
+variable "render_lambda_timeout" {
+  description = "Timeout for the render Lambda function in seconds"
+  type        = number
+  default     = 300
+}
+
+variable "api_name" {
+  description = "Name of the API Gateway"
+  type        = string
+}
+
+variable "api_stage" {
+  description = "Stage name for the API Gateway"
+  type        = string
+} 
