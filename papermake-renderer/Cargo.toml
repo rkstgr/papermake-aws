@@ -1,0 +1,11 @@
+[package]
+name = "papermake-renderer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aws_lambda_events = { version = "0.15.1", default-features = false, features = ["sns"] }
+papermake = { path = "../../papermake-rs/crates/papermake" }
+
+lambda_runtime = "0.13.0"
+tokio = { version = "1", features = ["macros"] }
