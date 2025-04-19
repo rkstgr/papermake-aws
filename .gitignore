@@ -28,3 +28,13 @@ Thumbs.db
 *.tfvars
 .terraformrc
 terraform.rc
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+.envrc
