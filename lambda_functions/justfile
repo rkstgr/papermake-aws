@@ -4,4 +4,5 @@ build:
 
 zip:
     rm -f pdf_renderer.zip
-    zip -j pdf_renderer.zip target/lambda/bootstrap/bootstrap
+    cd target/lambda/bootstrap && zip -r ../../../pdf_renderer.zip bootstrap
+    zip -r pdf_renderer.zip fonts

@@ -62,6 +62,7 @@ resource "aws_lambda_function" "pdf_renderer" {
       TEMPLATES_BUCKET = aws_s3_bucket.templates.id
       RESULTS_BUCKET   = aws_s3_bucket.results.id
       QUEUE_URL        = aws_sqs_queue.render_queue.url
+      FONTS_DIR        = "fonts"
     }
   }
 
