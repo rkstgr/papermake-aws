@@ -47,13 +47,15 @@ resource "aws_iam_role" "lambda_role" {
 
 # Lambda Function
 resource "aws_lambda_function" "pdf_renderer" {
-  filename         = "lambda_functions/pdf_renderer.zip"
+  filename         = "../../../lambda_functions/pdf_renderer.zip"
   function_name    = "${var.project_name}-pdf-renderer-${var.environment}"
   role            = aws_iam_role.lambda_role.arn
   handler         = "bootstrap"
-  runtime         = "provided.al2"
+  architectures   = ["arm64"]
+  runtime         = "provided.al2023"
   memory_size     = var.render_lambda_memory
   timeout         = var.render_lambda_timeout
+  source_code_hash = filebase64sha256("../../../lambda_functions/pdf_renderer.zip")
 
   environment {
     variables = {

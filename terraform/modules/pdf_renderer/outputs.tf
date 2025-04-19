@@ -20,5 +20,5 @@ output "queue_url" {
 
 output "lambda_function_name" {
   description = "Name of the PDF render Lambda function"
-  value       = aws_lambda_function.render_pdf.function_name
+  value       = aws_lambda_function.pdf_renderer.function_name
 } 

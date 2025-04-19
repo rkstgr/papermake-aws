@@ -1,4 +1,4 @@
-use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
+use aws_lambda_events::apigw::{ApiGatewayProxyRequest, ApiGatewayProxyResponse};
 use aws_lambda_events::encodings::Body;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::env;
 use uuid::Uuid;
+use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
 struct RenderRequest {
@@ -21,16 +22,36 @@ struct RenderJob {
     data: serde_json::Value,
 }
 
-async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpResponse, Error> {
+#[derive(Error, Debug)]
+pub enum RenderError {
+    #[error("Failed to parse request: {0}")]
+    RequestParseError(String),
+    #[error("Failed to render PDF: {0}")]
+    RenderingError(String),
+    #[error("S3 operation failed: {0}")]
+    S3Error(String),
+    #[error("SQS operation failed: {0}")]
+    SQSError(String),
+    #[error("Environment variable not found: {0}")]
+    EnvVarError(String),
+}
+
+async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<ApiGatewayProxyResponse, Error> {
 
     println!("event: {:?}", event);
 
-    let templates_bucket = env::var("TEMPLATES_BUCKET")?;
-    let results_bucket = env::var("RESULTS_BUCKET")?;
-    let queue_url = env::var("QUEUE_URL")?;
 
-    // Parse request body
-    let request: RenderRequest = serde_json::from_str(event.payload.as_str().ok_or("Missing payload")?)?;
+    let templates_bucket = env::var("TEMPLATES_BUCKET")
+        .map_err(|e| RenderError::EnvVarError("TEMPLATES_BUCKET".to_string()))?;
+    let results_bucket = env::var("RESULTS_BUCKET")
+        .map_err(|e| RenderError::EnvVarError("RESULTS_BUCKET".to_string()))?;
+    let queue_url = env::var("QUEUE_URL")
+        .map_err(|e| RenderError::EnvVarError("QUEUE_URL".to_string()))?;
+
+    let body = event.payload.body.unwrap();
+
+    let request: RenderRequest = serde_json::from_str(body.as_str())
+        .map_err(|e| RenderError::RequestParseError(e.to_string()))?;
     
     // Generate unique job ID
     let job_id = Uuid::new_v4().to_string();
@@ -53,7 +74,8 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpR
         .queue_url(&queue_url)
         .message_body(serde_json::to_string(&job)?)
         .send()
-        .await?;
+        .await
+        .map_err(|e| RenderError::SQSError(e.to_string()))?;
 
     // Get template from S3
     let template = s3_client
@@ -61,7 +83,8 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpR
         .bucket(&templates_bucket)
         .key(&request.template_id)
         .send()
-        .await?;
+        .await
+        .map_err(|e| RenderError::S3Error(e.to_string()))?;
 
     let template_data = template.body.collect().await?;
     
@@ -73,40 +96,20 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpR
     ) {
         Ok(result) => result,
         Err(e) => {
-            return Ok(ApiGatewayV2httpResponse {
-                status_code: 500,
-                headers: Default::default(),
-                body: Some(Body::Text(
-                    json!({
-                        "job_id": job_id,
-                        "status": "error",
-                        "errors": vec![e.to_string()],
-                    })
-                    .to_string(),
-                )),
-                is_base64_encoded: false,
-                cookies: Default::default(),
-                multi_value_headers: Default::default(),
-            });
+            return Ok(create_error_response(
+                500,
+                &job_id,
+                RenderError::RenderingError(e.to_string()),
+            ));
         }
     };
 
     if let None = render_result.pdf {
-        return Ok(ApiGatewayV2httpResponse {
-            status_code: 500,
-            headers: Default::default(),
-            body: Some(Body::Text(
-                json!({
-                    "job_id": job_id,
-                    "status": "error", 
-                    "errors": render_result.errors,
-                })
-                .to_string(),
-            )),
-            is_base64_encoded: false,
-            cookies: Default::default(),
-            multi_value_headers: Default::default(),
-        });
+        return Ok(create_error_response(
+            500,
+            &job_id,
+            RenderError::RenderingError("Rendering result is None".to_string()),
+        ));
     }
 
     let pdf = render_result.pdf.unwrap();
@@ -122,7 +125,7 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpR
 
     let pdf_base64 = BASE64_STANDARD.encode(pdf.as_slice());
     
-    Ok(ApiGatewayV2httpResponse {
+    Ok(ApiGatewayProxyResponse {
         status_code: 200,
         headers: Default::default(),
         body: Some(Body::Text(
@@ -135,9 +138,43 @@ async fn function_handler(event: LambdaEvent<Value>) -> Result<ApiGatewayV2httpR
             .to_string(),
         )),
         is_base64_encoded: false,
-        cookies: Default::default(),
         multi_value_headers: Default::default(),
     })
+}
+
+fn create_error_response(status_code: i32, job_id: &str, error: RenderError) -> ApiGatewayProxyResponse {
+    ApiGatewayProxyResponse {
+        status_code: status_code as i64,
+        headers: Default::default(),
+        body: Some(Body::Text(
+            json!({
+                "job_id": job_id,
+                "status": "error",
+                "error_type": error.type_name(),
+                "error_message": error.to_string(),
+            })
+            .to_string(),
+        )),
+        is_base64_encoded: false,
+        multi_value_headers: Default::default(),
+    }
+}
+
+// Helper trait to get the error type name
+trait ErrorTypeName {
+    fn type_name(&self) -> String;
+}
+
+impl ErrorTypeName for RenderError {
+    fn type_name(&self) -> String {
+        match self {
+            RenderError::RequestParseError(_) => "RequestParseError",
+            RenderError::RenderingError(_) => "RenderingError",
+            RenderError::S3Error(_) => "S3Error",
+            RenderError::SQSError(_) => "SQSError",
+            RenderError::EnvVarError(_) => "EnvVarError",
+        }.to_string()
+    }
 }
 
 #[tokio::main]

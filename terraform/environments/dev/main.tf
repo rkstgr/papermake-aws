@@ -14,7 +14,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-west-2"  # Change this to your preferred region
+  region = "eu-central-1"  # Updated to match S3 bucket region
 }
 
 module "pdf_renderer" {
