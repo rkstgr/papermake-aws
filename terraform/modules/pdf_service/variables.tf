@@ -23,14 +23,26 @@ variable "queue_name" {
   type        = string
 }
 
-variable "render_lambda_memory" {
-  description = "Memory allocation for the render Lambda function in MB"
+variable "request_handler_memory" {
+  description = "Memory allocation for the request handler Lambda function in MB"
+  type        = number
+  default     = 128
+}
+
+variable "request_handler_timeout" {
+  description = "Timeout for the request handler Lambda function in seconds"
+  type        = number
+  default     = 30
+}
+
+variable "renderer_memory" {
+  description = "Memory allocation for the renderer Lambda function in MB"
   type        = number
   default     = 1024
 }
 
-variable "render_lambda_timeout" {
-  description = "Timeout for the render Lambda function in seconds"
+variable "renderer_timeout" {
+  description = "Timeout for the renderer Lambda function in seconds"
   type        = number
   default     = 300
 }

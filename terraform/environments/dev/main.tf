@@ -17,8 +17,8 @@ provider "aws" {
   region = "eu-central-1"  # Updated to match S3 bucket region
 }
 
-module "pdf_renderer" {
-  source = "../../modules/pdf_renderer"
+module "pdf_service" {
+  source = "../../modules/pdf_service"
 
   environment = "dev"
   project_name = "papermake-pdf"
@@ -31,8 +31,11 @@ module "pdf_renderer" {
   queue_name = "pdf-render-queue-dev"
 
   # Lambda configurations
-  render_lambda_memory = 256 # can be increased to 1024 for longer documents
-  render_lambda_timeout = 300  # 5 minutes
+  request_handler_memory = 128
+  request_handler_timeout = 30  # 30 seconds
+  
+  renderer_memory = 256 # can be increased to 1024 for longer documents
+  renderer_timeout = 300  # 5 minutes
 
   # API Gateway configuration
   api_name = "pdf-renderer-api-dev"
