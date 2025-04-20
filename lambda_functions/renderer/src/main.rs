@@ -2,6 +2,9 @@ use aws_lambda_events::sqs::SqsEvent;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
+use std::collections::HashMap;
+use tokio::sync::{RwLock, OnceCell};
 use thiserror::Error;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -23,16 +26,43 @@ pub enum RenderError {
     EnvVarError(String),
 }
 
-async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
-    let templates_bucket = env::var("TEMPLATES_BUCKET")
-        .map_err(|_| RenderError::EnvVarError("TEMPLATES_BUCKET".to_string()))?;
-    let results_bucket = env::var("RESULTS_BUCKET")
-        .map_err(|_| RenderError::EnvVarError("RESULTS_BUCKET".to_string()))?;
+// Shared resources across invocations
+#[derive(Debug)]
+struct SharedResources {
+    s3_client: aws_sdk_s3::Client,
+    templates_bucket: String,
+    results_bucket: String,
+    template_cache: RwLock<HashMap<String, Vec<u8>>>,
+}
 
-    // Create S3 client
+// Use OnceCell instead of Lazy to initialize asynchronously
+static RESOURCES: OnceCell<Arc<SharedResources>> = OnceCell::const_new();
+
+// Initialize resources asynchronously
+async fn initialize_resources() -> Arc<SharedResources> {
+    // Read environment variables
+    let templates_bucket = env::var("TEMPLATES_BUCKET")
+        .expect("TEMPLATES_BUCKET environment variable not set");
+    let results_bucket = env::var("RESULTS_BUCKET")
+        .expect("RESULTS_BUCKET environment variable not set");
+    
+    // Initialize AWS client
     let config = aws_config::load_from_env().await;
     let s3_client = aws_sdk_s3::Client::new(&config);
+    
+    // Create and return resources
+    Arc::new(SharedResources {
+        s3_client,
+        templates_bucket,
+        results_bucket,
+        template_cache: RwLock::new(HashMap::new()),
+    })
+}
 
+async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
+    // Get the shared resources
+    let resources = RESOURCES.get().expect("Resources not initialized");
+    
     // Process each message from SQS
     for record in event.payload.records {
         let message_body = record.body.as_ref()
@@ -49,27 +79,51 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         
         println!("Processing job {}: template={}", job.job_id, job.template_id);
 
-        // Get template from S3
-        let template_result = s3_client
-            .get_object()
-            .bucket(&templates_bucket)
-            .key(&job.template_id)
-            .send()
-            .await;
-            
-        let template = match template_result {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Failed to fetch template {}: {}", job.template_id, e);
-                continue;
-            }
+        // Try to get template from cache first
+        let template_data = {
+            let cache = resources.template_cache.read().await;
+            cache.get(&job.template_id).cloned()
         };
+        
+        // If not in cache, fetch from S3 and cache it
+        let template_data = match template_data {
+            Some(data) => {
+                println!("Using cached template for {}", job.template_id);
+                data
+            },
+            None => {
+                println!("Template {} not in cache, fetching from S3", job.template_id);
+                // Get template from S3
+                let template_result = resources.s3_client
+                    .get_object()
+                    .bucket(&resources.templates_bucket)
+                    .key(&job.template_id)
+                    .send()
+                    .await;
+                    
+                let template = match template_result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Failed to fetch template {}: {}", job.template_id, e);
+                        continue;
+                    }
+                };
 
-        let template_data = match template.body.collect().await {
-            Ok(data) => data.to_vec(),
-            Err(e) => {
-                eprintln!("Failed to read template data: {}", e);
-                continue;
+                let data = match template.body.collect().await {
+                    Ok(data) => data.to_vec(),
+                    Err(e) => {
+                        eprintln!("Failed to read template data: {}", e);
+                        continue;
+                    }
+                };
+                
+                // Cache the template
+                {
+                    let mut cache = resources.template_cache.write().await;
+                    cache.insert(job.template_id.clone(), data.clone());
+                }
+                
+                data
             }
         };
         
@@ -94,9 +148,9 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         let pdf = render_result.pdf.unwrap();
 
         // Upload PDF to S3
-        match s3_client
+        match resources.s3_client
             .put_object()
-            .bucket(&results_bucket)
+            .bucket(&resources.results_bucket)
             .key(format!("{}.pdf", job.job_id))
             .body(pdf.into())
             .send()
@@ -118,6 +172,11 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .with_max_level(tracing::Level::INFO)
         .init();
+
+    // Initialize resources properly using the existing Tokio runtime
+    let resources = initialize_resources().await;
+    RESOURCES.set(resources).expect("Failed to set resources");
+    println!("Shared resources initialized");
 
     run(service_fn(function_handler)).await
 }
