@@ -31,7 +31,7 @@ module "pdf_renderer" {
   queue_name = "pdf-render-queue-dev"
 
   # Lambda configurations
-  render_lambda_memory = 1024
+  render_lambda_memory = 256 # can be increased to 1024 for longer documents
   render_lambda_timeout = 300  # 5 minutes
 
   # API Gateway configuration
