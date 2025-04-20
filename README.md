@@ -2,27 +2,28 @@
 
 Run the lambda function locally
 
-```
+```sh
+cd lambda_functions/request_handler
 cargo lambda watch
 ```
 
 and in another terminal, invoke it
 
-```
+```sh
 cargo lambda invoke --data-example apigw2-http --output-format json
 ```
 
 # Deploy
 
-First, build the lambda function
+First, build and package both lambda functions
 
-```
-cargo lambda build --release --arm64
+```sh
+just build
 ```
 
 Then, deploy the lambda function to AWS
 
-```
+```sh
 cd terraform/environments/dev
 terraform init
 terraform plan
