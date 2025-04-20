@@ -1,0 +1,8 @@
+build:
+    cargo lambda build --release --arm64
+    just zip
+    echo "Build complete and created pdf_request_handler.zip"
+
+zip:
+    rm -f pdf_request_handler.zip || true
+    cd ../../target/lambda/request-handler && zip -r ../../../lambda_functions/request_handler/pdf_request_handler.zip bootstrap

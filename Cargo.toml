@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "lambda_functions/renderer",
+    "lambda_functions/request_handler",
+]
+resolver = "2"

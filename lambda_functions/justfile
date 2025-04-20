@@ -1,8 +1,0 @@
-build:
-    cargo lambda build --release --arm64
-    just zip
-
-zip:
-    rm -f pdf_renderer.zip
-    cd target/lambda/bootstrap && zip -r ../../../pdf_renderer.zip bootstrap
-    zip -r pdf_renderer.zip fonts
