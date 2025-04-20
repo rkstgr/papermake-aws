@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::{RwLock, OnceCell};
+use tokio::sync::{RwLock, OnceCell, Mutex};
 use thiserror::Error;
+use papermake::typst::TypstWorld;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct RenderJob {
@@ -33,6 +34,8 @@ struct SharedResources {
     templates_bucket: String,
     results_bucket: String,
     template_cache: RwLock<HashMap<String, Vec<u8>>>,
+    // Add world cache with Mutex because TypstWorld requires &mut self
+    world_cache: RwLock<HashMap<String, Arc<Mutex<TypstWorld>>>>,
 }
 
 // Use OnceCell instead of Lazy to initialize asynchronously
@@ -56,6 +59,7 @@ async fn initialize_resources() -> Arc<SharedResources> {
         templates_bucket,
         results_bucket,
         template_cache: RwLock::new(HashMap::new()),
+        world_cache: RwLock::new(HashMap::new()),
     })
 }
 
@@ -127,16 +131,56 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
             }
         };
         
-        // Render PDF using papermake
-        let render_result = match render_pdf(
-            &job.template_id,
-            &template_data.as_slice(),
-            &job.data,
-        ) {
-            Ok(result) => result,
-            Err(e) => {
-                eprintln!("Rendering error: {}", e);
-                continue;
+        // Check if we have a cached world for this template
+        let world_cache_available = {
+            let cache = resources.world_cache.read().await;
+            cache.contains_key(&job.template_id)
+        };
+        
+        // Render PDF using papermake with world caching
+        let render_result = if world_cache_available {
+            // Clone the mutex to extend its lifetime beyond the read lock
+            let world_mutex = {
+                let cache = resources.world_cache.read().await;
+                cache.get(&job.template_id).unwrap().clone()
+            };
+            
+            // Now we can lock it safely
+            let mut world_guard = world_mutex.lock().await;
+            
+            println!("Using cached world for template {}", job.template_id);
+            match render_pdf_with_cache(
+                &job.template_id,
+                &template_data.as_slice(),
+                &job.data,
+                Some(&mut *world_guard),
+            ) {
+                Ok(result) => result,
+                Err(e) => {
+                    eprintln!("Rendering error with cached world: {}", e);
+                    continue;
+                }
+            }
+        } else {
+            // Render without cached world
+            match render_pdf(
+                &job.template_id,
+                &template_data.as_slice(),
+                &job.data,
+            ) {
+                Ok((result, world)) => {
+                    // Cache the world for future use
+                    if let Some(w) = world {
+                        println!("Caching world for template {}", job.template_id);
+                        let mut cache = resources.world_cache.write().await;
+                        cache.insert(job.template_id.clone(), Arc::new(Mutex::new(w)));
+                    }
+                    result
+                },
+                Err(e) => {
+                    eprintln!("Rendering error: {}", e);
+                    continue;
+                }
             }
         };
 
@@ -181,18 +225,39 @@ async fn main() -> Result<(), Error> {
     run(service_fn(function_handler)).await
 }
 
-// Helper function to render PDF using papermake
+// Helper function to render PDF using papermake (returns world for caching)
 fn render_pdf(
     id: &str,
     template_data: &[u8],
     data: &serde_json::Value,
+) -> Result<(papermake::render::RenderResult, Option<TypstWorld>), Box<dyn std::error::Error>> {
+    // Initialize papermake renderer
+    let template_data = String::from_utf8(template_data.to_vec())?;
+    let template = papermake::Template::from_file_content(id, &template_data)?;
+    
+    // Create world first so we can return it for caching
+    let json_data = serde_json::to_string(data)?;
+    let mut world = TypstWorld::new(template.content.clone(), json_data);
+    
+    // Render PDF using our new world
+    let result = papermake::render::render_pdf_with_cache(&template, data, Some(&mut world), None)?;
+    
+    Ok((result, Some(world)))
+}
+
+// Helper function to render PDF using an existing cached world
+fn render_pdf_with_cache(
+    id: &str,
+    template_data: &[u8],
+    data: &serde_json::Value,
+    world: Option<&mut TypstWorld>,
 ) -> Result<papermake::render::RenderResult, Box<dyn std::error::Error>> {
     // Initialize papermake renderer
     let template_data = String::from_utf8(template_data.to_vec())?;
     let template = papermake::Template::from_file_content(id, &template_data)?;
     
-    // Render PDF
-    let result = papermake::render_pdf(&template, data, None)?;
+    // Render PDF with the provided world
+    let result = papermake::render::render_pdf_with_cache(&template, data, world, None)?;
     
     Ok(result)
 }
