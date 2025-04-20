@@ -20,11 +20,21 @@ def generate_company():
     }
 
 
-def generate_customer():
-    """Generate a random customer"""
+def generate_customer(customer_id=None):
+    """Generate a random customer, or a specific one based on customer_id"""
+    # If customer_id is provided, seed the random generator to get consistent results
+    if customer_id is not None:
+        random.seed(customer_id)
+        fake.seed_instance(customer_id)
+
     first_name = fake.first_name()
     last_name = fake.last_name()
     email = f"{first_name[0].lower()}.{last_name.lower()}@{fake.free_email_domain()}"
+
+    # Reset the random seed if we set it
+    if customer_id is not None:
+        random.seed()
+        fake.seed_instance()
 
     return {
         "name": f"{first_name} {last_name}",
@@ -178,10 +188,14 @@ def generate_summary(gross_amount, commission_percent, minimum_fee):
     )
 
 
-def generate_trade_confirmation():
+def generate_trade_confirmation(customer_id=None, confirmation_id=None):
     """Generate a complete trade confirmation"""
+    # Use the seed for consistent but different results
+    if confirmation_id is not None:
+        random.seed(confirmation_id)
+
     company = generate_company()
-    customer = generate_customer()
+    customer = generate_customer(customer_id)
     transaction = generate_transaction()
 
     # Generate stock details and get the gross amount
@@ -203,6 +217,10 @@ def generate_trade_confirmation():
     # Due amount is the same as total amount in this example
     due_amount = total_amount
 
+    # Reset the random seed if we set it
+    if confirmation_id is not None:
+        random.seed()
+
     return {
         "company": company,
         "customer": customer,
@@ -214,9 +232,24 @@ def generate_trade_confirmation():
     }
 
 
-def generate_multiple_confirmations(count=5):
-    """Generate multiple trade confirmations"""
-    return [generate_trade_confirmation() for _ in range(count)]
+def generate_multiple_confirmations(customer_id=None, count=5):
+    """Generate multiple trade confirmations for a customer"""
+    return [
+        generate_trade_confirmation(customer_id, f"{customer_id}-{i}")
+        for i in range(count)
+    ]
+
+
+def generate_for_multiple_customers(num_customers=5, confirmations_per_customer=5):
+    """Generate confirmations for multiple customers"""
+    all_confirmations = []
+    for i in range(num_customers):
+        customer_id = f"customer-{i}"
+        customer_confirmations = generate_multiple_confirmations(
+            customer_id, confirmations_per_customer
+        )
+        all_confirmations.extend(customer_confirmations)
+    return all_confirmations
 
 
 # Generate a single confirmation
