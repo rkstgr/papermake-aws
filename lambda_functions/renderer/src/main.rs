@@ -66,6 +66,8 @@ async fn initialize_resources() -> Arc<SharedResources> {
 async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     // Get the shared resources
     let resources = RESOURCES.get().expect("Resources not initialized");
+
+    println!("Batch size: {}", event.payload.records.len());
     
     // Process each message from SQS
     for record in event.payload.records {
