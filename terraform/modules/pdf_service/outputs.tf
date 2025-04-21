@@ -31,4 +31,4 @@ output "request_handler_function_name" {
 output "renderer_function_name" {
   description = "The name of the renderer Lambda function"
   value       = aws_lambda_function.renderer.function_name
-} 
+}

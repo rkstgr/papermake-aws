@@ -38,3 +38,6 @@ __pycache__/
 *.pyz
 
 .envrc
+
+# logs
+logs/
