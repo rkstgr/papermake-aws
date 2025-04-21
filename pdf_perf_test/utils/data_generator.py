@@ -1,17 +1,30 @@
+"""
+Data generator for PDF performance testing.
+Generates sample data for PDF rendering requests.
+"""
+
 import random
-import json
 import datetime
-from faker import Faker
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
+from ..utils.logging import get_logger
 
-# Initialize Faker for generating realistic personal data
-fake = Faker("de_DE")  # German locale
+try:
+    from faker import Faker
+
+    # Initialize Faker for generating realistic personal data
+    fake = Faker("de_DE")  # German locale
+except ImportError:
+    # Fallback if Faker is not installed
+    fake = None
+
+# Initialize logger
+logger = get_logger("data_generator")
 
 
 def generate_company():
     """For now, we use a fixed company"""
-
+    logger.debug("Generating company data")
     return {
         "logo": None,
         "name": "MoneyBank",
@@ -24,27 +37,47 @@ def generate_customer(customer_id=None):
     """Generate a random customer, or a specific one based on customer_id"""
     # If customer_id is provided, seed the random generator to get consistent results
     if customer_id is not None:
+        logger.debug(f"Generating customer with seed {customer_id}")
         random.seed(customer_id)
-        fake.seed_instance(customer_id)
+        if fake:
+            fake.seed_instance(customer_id)
+    else:
+        logger.debug("Generating random customer")
 
-    first_name = fake.first_name()
-    last_name = fake.last_name()
-    email = f"{first_name[0].lower()}.{last_name.lower()}@{fake.free_email_domain()}"
+    if fake:
+        first_name = fake.first_name()
+        last_name = fake.last_name()
+        email = (
+            f"{first_name[0].lower()}.{last_name.lower()}@{fake.free_email_domain()}"
+        )
+        address = f"{fake.street_address()}, {fake.postcode()} {fake.city()}, Germany"
+    else:
+        # Fallback if Faker is not installed
+        names = ["Max", "Anna", "Felix", "Sophie", "Thomas"]
+        surnames = ["Müller", "Schmidt", "Schneider", "Fischer", "Weber"]
+        domains = ["gmail.com", "yahoo.com", "web.de", "outlook.com"]
+        first_name = random.choice(names)
+        last_name = random.choice(surnames)
+        email = f"{first_name[0].lower()}.{last_name.lower()}@{random.choice(domains)}"
+        address = f"Hauptstraße {random.randint(1, 200)}, {random.randint(10000, 99999)} Berlin, Germany"
 
     # Reset the random seed if we set it
     if customer_id is not None:
         random.seed()
-        fake.seed_instance()
+        if fake:
+            fake.seed_instance()
 
     return {
         "name": f"{first_name} {last_name}",
-        "address": f"{fake.street_address()}, {fake.postcode()} {fake.city()}, Germany",
+        "address": address,
         "email": email,
     }
 
 
 def generate_transaction():
     """Generate transaction details"""
+    logger.debug("Generating transaction details")
+
     # Generate a date in the past month
     date = datetime.datetime.now() - datetime.timedelta(days=random.randint(1, 30))
     date_str = date.strftime("%d %B %Y")
@@ -85,6 +118,8 @@ def format_amount(amount):
 
 def generate_stock_details(num_trades=4):
     """Generate stock transaction details"""
+    logger.debug(f"Generating stock details with {num_trades} trades")
+
     german_stocks = [
         {"symbol": "SIE.DE", "name": "Siemens AG", "price_range": (150, 200)},
         {"symbol": "SAP.DE", "name": "SAP SE", "price_range": (180, 220)},
@@ -130,6 +165,11 @@ def generate_stock_details(num_trades=4):
         else:
             total_sell += amount
 
+        trade_type = "buy" if is_buy else "sell"
+        logger.debug(
+            f"Generated {trade_type} trade for {stock['name']} ({stock['symbol']}): {shares} shares at {format_amount(price)}"
+        )
+
         details.append(
             {
                 "stock": f"{stock['name']} ({stock['symbol']})",
@@ -143,12 +183,19 @@ def generate_stock_details(num_trades=4):
 
     # Calculate the gross amount
     gross_amount = total_sell - total_buy
+    logger.debug(
+        f"Total buy: {format_amount(total_buy)}, Total sell: {format_amount(total_sell)}, Gross amount: {format_amount(gross_amount)}"
+    )
 
     return details, gross_amount, total_buy, total_sell
 
 
 def generate_summary(gross_amount, commission_percent, minimum_fee):
     """Generate financial summary based on transaction details"""
+    logger.debug(
+        f"Generating summary with gross amount {format_amount(gross_amount)}, commission {commission_percent}%, minimum fee {minimum_fee}"
+    )
+
     # Convert commission_percent to a decimal
     commission_rate = Decimal(commission_percent)
     min_fee = Decimal(minimum_fee)
@@ -157,6 +204,9 @@ def generate_summary(gross_amount, commission_percent, minimum_fee):
     brokerage_fee = Decimal(str(abs(gross_amount))) * commission_rate / Decimal("100")
     # Apply minimum fee if necessary
     if brokerage_fee < min_fee:
+        logger.debug(
+            f"Applying minimum fee {format_amount(min_fee)} (calculated fee was {format_amount(brokerage_fee)})"
+        )
         brokerage_fee = min_fee
 
     # VAT on brokerage fee (19% in Germany)
@@ -173,6 +223,9 @@ def generate_summary(gross_amount, commission_percent, minimum_fee):
     withholding_tax = Decimal("0.00")
     if gross_amount > 0:  # Only apply on profits
         withholding_tax = gross_amount * Decimal("0.25")
+        logger.debug(
+            f"Applied withholding tax of {format_amount(withholding_tax)} on profit"
+        )
 
     return (
         {
@@ -190,6 +243,10 @@ def generate_summary(gross_amount, commission_percent, minimum_fee):
 
 def generate_trade_confirmation(customer_id=None, confirmation_id=None):
     """Generate a complete trade confirmation"""
+    logger.debug(
+        f"Generating trade confirmation for customer_id={customer_id}, confirmation_id={confirmation_id}"
+    )
+
     # Use the seed for consistent but different results
     if confirmation_id is not None:
         random.seed(confirmation_id)
@@ -221,6 +278,10 @@ def generate_trade_confirmation(customer_id=None, confirmation_id=None):
     if confirmation_id is not None:
         random.seed()
 
+    logger.debug(
+        f"Generated confirmation with total amount: {format_amount(total_amount)}"
+    )
+
     return {
         "company": company,
         "customer": customer,
@@ -230,33 +291,3 @@ def generate_trade_confirmation(customer_id=None, confirmation_id=None):
         "total_amount": format_amount(total_amount),
         "due_amount": format_amount(due_amount),
     }
-
-
-def generate_multiple_confirmations(customer_id=None, count=5):
-    """Generate multiple trade confirmations for a customer"""
-    return [
-        generate_trade_confirmation(customer_id, f"{customer_id}-{i}")
-        for i in range(count)
-    ]
-
-
-def generate_for_multiple_customers(num_customers=5, confirmations_per_customer=5):
-    """Generate confirmations for multiple customers"""
-    all_confirmations = []
-    for i in range(num_customers):
-        customer_id = f"customer-{i}"
-        customer_confirmations = generate_multiple_confirmations(
-            customer_id, confirmations_per_customer
-        )
-        all_confirmations.extend(customer_confirmations)
-    return all_confirmations
-
-
-# Generate a single confirmation
-
-if __name__ == "__main__":
-    confirmation = generate_trade_confirmation()
-    print(json.dumps(confirmation, indent=2, ensure_ascii=False))
-
-    with open("sample_trade_data.json", "w") as f:
-        json.dump(confirmation, f, indent=2, ensure_ascii=False)
