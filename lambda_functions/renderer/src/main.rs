@@ -1,12 +1,15 @@
 use aws_lambda_events::sqs::SqsEvent;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
+use papermake::{CachedTemplate, TemplateBuilder, TemplateId};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::{sync::{RwLock, OnceCell}, time::Instant};
 use thiserror::Error;
-use papermake::{CachedTemplate, TemplateBuilder};
+use tokio::{
+    sync::{OnceCell, RwLock},
+    time::Instant,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct RenderJob {
@@ -43,15 +46,15 @@ static RESOURCES: OnceCell<Arc<SharedResources>> = OnceCell::const_new();
 // Initialize resources asynchronously
 async fn initialize_resources() -> Arc<SharedResources> {
     // Read environment variables
-    let templates_bucket = env::var("TEMPLATES_BUCKET")
-        .expect("TEMPLATES_BUCKET environment variable not set");
-    let results_bucket = env::var("RESULTS_BUCKET")
-        .expect("RESULTS_BUCKET environment variable not set");
-    
+    let templates_bucket =
+        env::var("TEMPLATES_BUCKET").expect("TEMPLATES_BUCKET environment variable not set");
+    let results_bucket =
+        env::var("RESULTS_BUCKET").expect("RESULTS_BUCKET environment variable not set");
+
     // Initialize AWS client
     let config = aws_config::load_from_env().await;
     let s3_client = aws_sdk_s3::Client::new(&config);
-    
+
     // Create and return resources
     Arc::new(SharedResources {
         s3_client,
@@ -66,12 +69,14 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
     let resources = RESOURCES.get().expect("Resources not initialized");
 
     println!("Batch size: {}", event.payload.records.len());
-    
+
     // Process each message from SQS
     for record in event.payload.records {
-        let message_body = record.body.as_ref()
+        let message_body = record
+            .body
+            .as_ref()
             .ok_or_else(|| RenderError::JobParseError("Empty message body".to_string()))?;
-            
+
         // Parse the job from the message
         let job: RenderJob = match serde_json::from_str(message_body) {
             Ok(job) => job,
@@ -80,8 +85,11 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                 continue; // Skip this message and move to the next one
             }
         };
-        
-        println!("Processing job {}: template={}", job.job_id, job.template_id);
+
+        println!(
+            "Processing job {}: template={}",
+            job.job_id, job.template_id
+        );
 
         // Get or create cached template
         let cached_template = {
@@ -91,17 +99,21 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                 cached_template.clone()
             } else {
                 drop(cache); // Release read lock before acquiring write lock
-                
-                println!("Template {} not in cache, fetching from S3", job.template_id);
-                
+
+                println!(
+                    "Template {} not in cache, fetching from S3",
+                    job.template_id
+                );
+
                 // Fetch template from S3
-                let template_result = resources.s3_client
+                let template_result = resources
+                    .s3_client
                     .get_object()
                     .bucket(&resources.templates_bucket)
                     .key(&job.template_id)
                     .send()
                     .await;
-                    
+
                 let template_object = match template_result {
                     Ok(t) => t,
                     Err(e) => {
@@ -117,7 +129,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                         continue;
                     }
                 };
-                
+
                 // Parse template content and create cached template directly
                 let template_content = match String::from_utf8(template_data.clone()) {
                     Ok(content) => content,
@@ -126,41 +138,53 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                         continue;
                     }
                 };
-                
-                let cached_template = match TemplateBuilder::from_raw_content_cached(&job.template_id, template_content) {
+
+                let cached_template = match TemplateBuilder::from_raw_content_cached(
+                    TemplateId::from(job.template_id.clone()),
+                    template_content,
+                ) {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("Failed to create cached template: {}", e);
                         continue;
                     }
                 };
-                
+
                 // Cache both raw data and compiled template
                 {
                     let mut cache = resources.template_cache.write().await;
-                    cache.insert(job.template_id.clone(), (template_data, cached_template.clone()));
+                    cache.insert(
+                        job.template_id.clone(),
+                        (template_data, cached_template.clone()),
+                    );
                 }
-                
+
                 cached_template
             }
         };
-        
+
         // Render PDF - much simpler now!
         let start_time = Instant::now();
-        let pdf = match cached_template.render(&job.data) {
+        let render_result = match cached_template.render(&job.data) {
             Ok(result) => {
                 let render_time = start_time.elapsed();
                 println!("Render time: {:?}", render_time);
                 result
-            },
+            }
             Err(e) => {
                 eprintln!("Rendering error: {}", e);
                 continue;
             }
         };
 
+        let Some(pdf) = render_result.pdf else {
+            eprintln!("Render result is empty");
+            continue;
+        };
+
         // Upload PDF to S3
-        match resources.s3_client
+        match resources
+            .s3_client
             .put_object()
             .bucket(&resources.results_bucket)
             .key(format!("{}.pdf", job.job_id))
