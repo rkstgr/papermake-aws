@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::sync::{RwLock, OnceCell, Mutex};
+use tokio::{sync::{RwLock, OnceCell}, time::Instant};
 use thiserror::Error;
-use papermake::typst::TypstWorld;
+use papermake::{CachedTemplate, TemplateBuilder};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct RenderJob {
@@ -33,9 +33,8 @@ struct SharedResources {
     s3_client: aws_sdk_s3::Client,
     templates_bucket: String,
     results_bucket: String,
-    template_cache: RwLock<HashMap<String, Vec<u8>>>,
-    // Add world cache with Mutex because TypstWorld requires &mut self
-    world_cache: RwLock<HashMap<String, Arc<Mutex<TypstWorld>>>>,
+    // Cache compiled templates with their content - much simpler than manual world management
+    template_cache: RwLock<HashMap<String, (Vec<u8>, CachedTemplate)>>,
 }
 
 // Use OnceCell instead of Lazy to initialize asynchronously
@@ -59,7 +58,6 @@ async fn initialize_resources() -> Arc<SharedResources> {
         templates_bucket,
         results_bucket,
         template_cache: RwLock::new(HashMap::new()),
-        world_cache: RwLock::new(HashMap::new()),
     })
 }
 
@@ -85,21 +83,18 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
         
         println!("Processing job {}: template={}", job.job_id, job.template_id);
 
-        // Try to get template from cache first
-        let template_data = {
+        // Get or create cached template
+        let cached_template = {
             let cache = resources.template_cache.read().await;
-            cache.get(&job.template_id).cloned()
-        };
-        
-        // If not in cache, fetch from S3 and cache it
-        let template_data = match template_data {
-            Some(data) => {
+            if let Some((_, cached_template)) = cache.get(&job.template_id) {
                 println!("Using cached template for {}", job.template_id);
-                data
-            },
-            None => {
+                cached_template.clone()
+            } else {
+                drop(cache); // Release read lock before acquiring write lock
+                
                 println!("Template {} not in cache, fetching from S3", job.template_id);
-                // Get template from S3
+                
+                // Fetch template from S3
                 let template_result = resources.s3_client
                     .get_object()
                     .bucket(&resources.templates_bucket)
@@ -107,7 +102,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                     .send()
                     .await;
                     
-                let template = match template_result {
+                let template_object = match template_result {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("Failed to fetch template {}: {}", job.template_id, e);
@@ -115,7 +110,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                     }
                 };
 
-                let data = match template.body.collect().await {
+                let template_data = match template_object.body.collect().await {
                     Ok(data) => data.to_vec(),
                     Err(e) => {
                         eprintln!("Failed to read template data: {}", e);
@@ -123,75 +118,46 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                     }
                 };
                 
-                // Cache the template
+                // Parse template content and create cached template directly
+                let template_content = match String::from_utf8(template_data.clone()) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        eprintln!("Failed to parse template as UTF-8: {}", e);
+                        continue;
+                    }
+                };
+                
+                let cached_template = match TemplateBuilder::from_raw_content_cached(&job.template_id, template_content) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("Failed to create cached template: {}", e);
+                        continue;
+                    }
+                };
+                
+                // Cache both raw data and compiled template
                 {
                     let mut cache = resources.template_cache.write().await;
-                    cache.insert(job.template_id.clone(), data.clone());
+                    cache.insert(job.template_id.clone(), (template_data, cached_template.clone()));
                 }
                 
-                data
+                cached_template
             }
         };
         
-        // Check if we have a cached world for this template
-        let world_cache_available = {
-            let cache = resources.world_cache.read().await;
-            cache.contains_key(&job.template_id)
-        };
-        
-        // Render PDF using papermake with world caching
-        let render_result = if world_cache_available {
-            // Clone the mutex to extend its lifetime beyond the read lock
-            let world_mutex = {
-                let cache = resources.world_cache.read().await;
-                cache.get(&job.template_id).unwrap().clone()
-            };
-            
-            // Now we can lock it safely
-            let mut world_guard = world_mutex.lock().await;
-            
-            println!("Using cached world for template {}", job.template_id);
-            match render_pdf_with_cache(
-                &job.template_id,
-                &template_data.as_slice(),
-                &job.data,
-                Some(&mut *world_guard),
-            ) {
-                Ok(result) => result,
-                Err(e) => {
-                    eprintln!("Rendering error with cached world: {}", e);
-                    continue;
-                }
-            }
-        } else {
-            // Render without cached world
-            match render_pdf(
-                &job.template_id,
-                &template_data.as_slice(),
-                &job.data,
-            ) {
-                Ok((result, world)) => {
-                    // Cache the world for future use
-                    if let Some(w) = world {
-                        println!("Caching world for template {}", job.template_id);
-                        let mut cache = resources.world_cache.write().await;
-                        cache.insert(job.template_id.clone(), Arc::new(Mutex::new(w)));
-                    }
-                    result
-                },
-                Err(e) => {
-                    eprintln!("Rendering error: {}", e);
-                    continue;
-                }
+        // Render PDF - much simpler now!
+        let start_time = Instant::now();
+        let pdf = match cached_template.render(&job.data) {
+            Ok(result) => {
+                let render_time = start_time.elapsed();
+                println!("Render time: {:?}", render_time);
+                result
+            },
+            Err(e) => {
+                eprintln!("Rendering error: {}", e);
+                continue;
             }
         };
-
-        if let None = render_result.pdf {
-            eprintln!("Rendering result is None for job {}", job.job_id);
-            continue;
-        }
-
-        let pdf = render_result.pdf.unwrap();
 
         // Upload PDF to S3
         match resources.s3_client
@@ -225,41 +191,4 @@ async fn main() -> Result<(), Error> {
     println!("Shared resources initialized");
 
     run(service_fn(function_handler)).await
-}
-
-// Helper function to render PDF using papermake (returns world for caching)
-fn render_pdf(
-    id: &str,
-    template_data: &[u8],
-    data: &serde_json::Value,
-) -> Result<(papermake::render::RenderResult, Option<TypstWorld>), Box<dyn std::error::Error>> {
-    // Initialize papermake renderer
-    let template_data = String::from_utf8(template_data.to_vec())?;
-    let template = papermake::Template::from_file_content(id, &template_data)?;
-    
-    // Create world first so we can return it for caching
-    let json_data = serde_json::to_string(data)?;
-    let mut world = TypstWorld::new(template.content.clone(), json_data);
-    
-    // Render PDF using our new world
-    let result = papermake::render::render_pdf_with_cache(&template, data, Some(&mut world), None)?;
-    
-    Ok((result, Some(world)))
-}
-
-// Helper function to render PDF using an existing cached world
-fn render_pdf_with_cache(
-    id: &str,
-    template_data: &[u8],
-    data: &serde_json::Value,
-    world: Option<&mut TypstWorld>,
-) -> Result<papermake::render::RenderResult, Box<dyn std::error::Error>> {
-    // Initialize papermake renderer
-    let template_data = String::from_utf8(template_data.to_vec())?;
-    let template = papermake::Template::from_file_content(id, &template_data)?;
-    
-    // Render PDF with the provided world
-    let result = papermake::render::render_pdf_with_cache(&template, data, world, None)?;
-    
-    Ok(result)
 }
