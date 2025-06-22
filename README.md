@@ -29,3 +29,8 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+# Test
+```sh
+just test
+```
