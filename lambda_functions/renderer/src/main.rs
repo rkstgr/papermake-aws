@@ -221,8 +221,7 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
 
         // Upload PDF to S3
         let upload_span = tracing::info_span!("s3_pdf_upload");
-        let upload_start = Instant::now();
-        let upload_result = {
+        let _ = {
             let _enter = upload_span.enter();
             resources
                 .s3_client
@@ -233,22 +232,8 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
                 .send()
                 .await
         };
-        let upload_time = upload_start.elapsed();
 
-        match upload_result {
-            Ok(_) => {
-                info!(
-                    "Successfully uploaded PDF for job {} (upload time: {:?})",
-                    job.job_id, upload_time
-                );
-            }
-            Err(e) => {
-                error!(
-                    "Failed to upload PDF for job {}: {} (upload time: {:?})",
-                    job.job_id, e, upload_time
-                );
-            }
-        }
+        info!("Successfully uploaded PDF for job {}", job.job_id);
     }
 
     // Return OK to acknowledge processing of all messages
@@ -258,9 +243,9 @@ async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Initialize OpenTelemetry exporter
-    let otlp_endpoint = env::var("OTLP_ENDPOINT")
-        .expect("OTLP_ENDPOINT environment variable not set");
-    
+    let otlp_endpoint =
+        env::var("OTLP_ENDPOINT").expect("OTLP_ENDPOINT environment variable not set");
+
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         .with_endpoint(otlp_endpoint)
@@ -275,7 +260,7 @@ async fn main() -> Result<(), Error> {
 
     // Create tracer provider
     let tracer_provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
+        .with_simple_exporter(exporter)
         .with_resource(resource)
         .build();
 
