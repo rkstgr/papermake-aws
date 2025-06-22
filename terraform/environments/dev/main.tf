@@ -40,4 +40,25 @@ module "pdf_service" {
   
   # OpenTelemetry configuration
   otlp_endpoint = var.otlp_endpoint
+}
+
+# Outputs
+output "function_url" {
+  description = "The HTTPS URL of the PDF renderer Lambda function"
+  value       = module.pdf_service.function_url
+}
+
+output "templates_bucket" {
+  description = "Name of the S3 bucket for templates"
+  value       = module.pdf_service.templates_bucket
+}
+
+output "results_bucket" {
+  description = "Name of the S3 bucket for results"
+  value       = module.pdf_service.results_bucket
+}
+
+output "renderer_function_name" {
+  description = "Name of the renderer Lambda function"
+  value       = module.pdf_service.renderer_function_name
 } 
