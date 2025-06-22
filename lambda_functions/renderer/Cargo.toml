@@ -7,7 +7,7 @@ edition = "2021"
 aws-config = "0.56"
 aws-sdk-s3 = "0.34"
 aws-sdk-sqs = "0.34"
-aws_lambda_events = { version = "0.16", features = ["apigw"] }
+aws_lambda_events = { version = "0.16", features = ["lambda_function_urls"] }
 base64 = "0.21"
 lambda_runtime = "0.8"
 serde = { version = "1.0", features = ["derive"] }

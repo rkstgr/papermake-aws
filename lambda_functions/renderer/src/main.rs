@@ -1,13 +1,15 @@
-use aws_lambda_events::sqs::SqsEvent;
+use aws_lambda_events::lambda_function_urls::LambdaFunctionUrlRequest;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use opentelemetry::{global, trace::TracerProvider, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{trace::SdkTracerProvider, Resource};
 use papermake::{CachedTemplate, TemplateBuilder, TemplateId};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
+use uuid::Uuid;
 use thiserror::Error;
 use tokio::{
     sync::{OnceCell, RwLock},
@@ -16,11 +18,38 @@ use tokio::{
 use tracing::{error, info, instrument, Span};
 use tracing_subscriber::{layer::SubscriberExt, Registry};
 
-#[derive(Debug, Deserialize, Serialize)]
-struct RenderJob {
-    job_id: String,
+#[derive(Debug, Deserialize)]
+struct RenderRequest {
+    jobs: Vec<RenderJobRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RenderJobRequest {
     template_id: String,
     data: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct JobResult {
+    job_id: String,
+    template_id: String,
+    status: String,
+    s3_key: Option<String>,
+    file_size: Option<u64>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchResponse {
+    results: Vec<JobResult>,
+    summary: BatchSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchSummary {
+    total: usize,
+    success: usize,
+    failed: usize,
 }
 
 #[derive(Error, Debug)]
@@ -48,6 +77,140 @@ struct SharedResources {
 // Use OnceCell instead of Lazy to initialize asynchronously
 static RESOURCES: OnceCell<Arc<SharedResources>> = OnceCell::const_new();
 
+// Process a single job and return the result
+async fn process_single_job(
+    resources: &SharedResources,
+    job_id: &str,
+    job_request: &RenderJobRequest,
+) -> Result<JobResult, RenderError> {
+    // Get or create cached template
+    let cached_template = get_cached_template(resources, &job_request.template_id).await?;
+
+    // Render PDF
+    let render_span = tracing::info_span!("pdf_render");
+    let start_time = Instant::now();
+    let render_result = {
+        let _enter = render_span.enter();
+        cached_template.render(&job_request.data)
+    };
+
+    let pdf_data = match render_result {
+        Ok(result) => {
+            let render_time = start_time.elapsed();
+            info!("Render time: {:?}", render_time);
+            match result.pdf {
+                Some(pdf) => pdf,
+                None => return Err(RenderError::RenderingError("Render result is empty".to_string())),
+            }
+        }
+        Err(e) => return Err(RenderError::RenderingError(e.to_string())),
+    };
+
+    // Upload PDF to S3
+    let s3_key = format!("{}.pdf", job_id);
+    let upload_span = tracing::info_span!("s3_pdf_upload");
+    let file_size = pdf_data.len() as u64;
+    
+    {
+        let _enter = upload_span.enter();
+        resources
+            .s3_client
+            .put_object()
+            .bucket(&resources.results_bucket)
+            .key(&s3_key)
+            .body(pdf_data.into())
+            .send()
+            .await
+            .map_err(|e| RenderError::S3Error(format!("Failed to upload PDF: {}", e)))?;
+    }
+
+    info!("Successfully uploaded PDF for job {}", job_id);
+
+    Ok(JobResult {
+        job_id: job_id.to_string(),
+        template_id: job_request.template_id.clone(),
+        status: "success".to_string(),
+        s3_key: Some(s3_key),
+        file_size: Some(file_size),
+        error: None,
+    })
+}
+
+// Get cached template or fetch from S3
+async fn get_cached_template(
+    resources: &SharedResources,
+    template_id: &str,
+) -> Result<CachedTemplate, RenderError> {
+    let cache_span = tracing::info_span!("template_cache_lookup");
+    let _enter = cache_span.enter();
+
+    let cache = resources.template_cache.read().await;
+    if let Some((_, cached_template)) = cache.get(template_id) {
+        info!("Using cached template for {}", template_id);
+        Span::current().record("cache_hit", true);
+        return Ok(cached_template.clone());
+    }
+    drop(cache);
+
+    Span::current().record("cache_hit", false);
+    info!("Template {} not in cache, fetching from S3", template_id);
+
+    // Fetch template from S3
+    let s3_fetch_span = tracing::info_span!("s3_template_fetch");
+    let s3_start = Instant::now();
+    let template_result = {
+        let _enter = s3_fetch_span.enter();
+        resources
+            .s3_client
+            .get_object()
+            .bucket(&resources.templates_bucket)
+            .key(template_id)
+            .send()
+            .await
+    };
+    let s3_fetch_time = s3_start.elapsed();
+    info!("S3 fetch time: {:?}", s3_fetch_time);
+
+    let template_object = template_result
+        .map_err(|e| RenderError::S3Error(format!("Failed to fetch template: {}", e)))?;
+
+    let template_data = template_object
+        .body
+        .collect()
+        .await
+        .map_err(|e| RenderError::S3Error(format!("Failed to read template data: {}", e)))?
+        .to_vec();
+
+    // Parse template content and create cached template
+    let compile_span = tracing::info_span!("template_compile");
+    let compile_start = Instant::now();
+
+    let template_content = String::from_utf8(template_data.clone())
+        .map_err(|e| RenderError::RenderingError(format!("Failed to parse template as UTF-8: {}", e)))?;
+
+    let cached_template = {
+        let _enter = compile_span.enter();
+        TemplateBuilder::from_raw_content_cached(
+            TemplateId::from(template_id.to_string()),
+            template_content,
+        )
+        .map_err(|e| RenderError::RenderingError(format!("Failed to create cached template: {}", e)))?
+    };
+    let compile_time = compile_start.elapsed();
+    info!("Template compile time: {:?}", compile_time);
+
+    // Cache both raw data and compiled template
+    {
+        let mut cache = resources.template_cache.write().await;
+        cache.insert(
+            template_id.to_string(),
+            (template_data, cached_template.clone()),
+        );
+    }
+
+    Ok(cached_template)
+}
+
 // Initialize resources asynchronously
 async fn initialize_resources() -> Arc<SharedResources> {
     // Read environment variables
@@ -69,175 +232,83 @@ async fn initialize_resources() -> Arc<SharedResources> {
     })
 }
 
-#[instrument(skip(event), fields(batch_size = event.payload.records.len()))]
-async fn function_handler(event: LambdaEvent<SqsEvent>) -> Result<(), Error> {
+#[instrument(skip(event), fields(batch_size))]
+async fn function_handler(event: LambdaEvent<LambdaFunctionUrlRequest>) -> Result<Value, Error> {
+    // Parse request body
+    let body = event
+        .payload
+        .body
+        .ok_or_else(|| Error::from("Missing request body"))?;
+    let request: RenderRequest = serde_json::from_str(&body).map_err(|e| {
+        error!("Error parsing request body: {}", e);
+        Error::from(format!("Invalid request format: {}", e))
+    })?;
+
     // Get the shared resources
     let resources = RESOURCES.get().expect("Resources not initialized");
 
-    info!("Batch size: {}", event.payload.records.len());
+    info!("Processing batch of {} jobs", request.jobs.len());
+    Span::current().record("batch_size", request.jobs.len());
 
-    // Process each message from SQS
-    for record in event.payload.records {
-        let message_body = record
-            .body
-            .as_ref()
-            .ok_or_else(|| RenderError::JobParseError("Empty message body".to_string()))?;
+    let mut results = Vec::new();
+    let mut success_count = 0;
+    let mut failed_count = 0;
 
-        // Parse the job from the message
-        let job: RenderJob = match serde_json::from_str(message_body) {
-            Ok(job) => job,
-            Err(e) => {
-                eprintln!("Failed to parse job: {}", e);
-                continue; // Skip this message and move to the next one
-            }
-        };
-
+    // Process each job
+    for job_request in request.jobs {
+        let job_id = Uuid::new_v4().to_string();
+        
         let job_span = tracing::info_span!(
             "process_job",
-            job_id = %job.job_id,
-            template_id = %job.template_id
+            job_id = %job_id,
+            template_id = %job_request.template_id
         );
         let _enter = job_span.enter();
 
         info!(
             "Processing job {}: template={}",
-            job.job_id, job.template_id
+            job_id, job_request.template_id
         );
 
-        // Get or create cached template
-        let cached_template = {
-            let cache_span = tracing::info_span!("template_cache_lookup");
-            let _enter = cache_span.enter();
-
-            let cache = resources.template_cache.read().await;
-            if let Some((_, cached_template)) = cache.get(&job.template_id) {
-                info!("Using cached template for {}", job.template_id);
-                Span::current().record("cache_hit", true);
-                cached_template.clone()
-            } else {
-                drop(cache); // Release read lock before acquiring write lock
-                Span::current().record("cache_hit", false);
-
-                info!(
-                    "Template {} not in cache, fetching from S3",
-                    job.template_id
-                );
-
-                // Fetch template from S3
-                let s3_fetch_span = tracing::info_span!("s3_template_fetch");
-                let s3_start = Instant::now();
-                let template_result = {
-                    let _enter = s3_fetch_span.enter();
-                    resources
-                        .s3_client
-                        .get_object()
-                        .bucket(&resources.templates_bucket)
-                        .key(&job.template_id)
-                        .send()
-                        .await
-                };
-                let s3_fetch_time = s3_start.elapsed();
-                info!("S3 fetch time: {:?}", s3_fetch_time);
-
-                let template_object = match template_result {
-                    Ok(t) => t,
-                    Err(e) => {
-                        error!("Failed to fetch template {}: {}", job.template_id, e);
-                        continue;
-                    }
-                };
-
-                let template_data = match template_object.body.collect().await {
-                    Ok(data) => data.to_vec(),
-                    Err(e) => {
-                        error!("Failed to read template data: {}", e);
-                        continue;
-                    }
-                };
-
-                // Parse template content and create cached template directly
-                let compile_span = tracing::info_span!("template_compile");
-                let compile_start = Instant::now();
-
-                let template_content = match String::from_utf8(template_data.clone()) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        error!("Failed to parse template as UTF-8: {}", e);
-                        continue;
-                    }
-                };
-
-                let cached_template = {
-                    let _enter = compile_span.enter();
-                    match TemplateBuilder::from_raw_content_cached(
-                        TemplateId::from(job.template_id.clone()),
-                        template_content,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Failed to create cached template: {}", e);
-                            continue;
-                        }
-                    }
-                };
-                let compile_time = compile_start.elapsed();
-                info!("Template compile time: {:?}", compile_time);
-
-                // Cache both raw data and compiled template
-                {
-                    let mut cache = resources.template_cache.write().await;
-                    cache.insert(
-                        job.template_id.clone(),
-                        (template_data, cached_template.clone()),
-                    );
-                }
-
-                cached_template
+        // Process individual job and create result
+        let job_result = match process_single_job(&resources, &job_id, &job_request).await {
+            Ok(result) => {
+                success_count += 1;
+                result
             }
-        };
-
-        // Render PDF - much simpler now!
-        let render_span = tracing::info_span!("pdf_render");
-        let start_time = Instant::now();
-        let render_result = {
-            let _enter = render_span.enter();
-            match cached_template.render(&job.data) {
-                Ok(result) => {
-                    let render_time = start_time.elapsed();
-                    info!("Render time: {:?}", render_time);
-                    result
-                }
-                Err(e) => {
-                    error!("Rendering error: {}", e);
-                    continue;
+            Err(e) => {
+                failed_count += 1;
+                error!("Job {} failed: {}", job_id, e);
+                JobResult {
+                    job_id: job_id.clone(),
+                    template_id: job_request.template_id.clone(),
+                    status: "error".to_string(),
+                    s3_key: None,
+                    file_size: None,
+                    error: Some(e.to_string()),
                 }
             }
         };
-
-        let Some(pdf) = render_result.pdf else {
-            error!("Render result is empty");
-            continue;
-        };
-
-        // Upload PDF to S3
-        let upload_span = tracing::info_span!("s3_pdf_upload");
-        let _ = {
-            let _enter = upload_span.enter();
-            resources
-                .s3_client
-                .put_object()
-                .bucket(&resources.results_bucket)
-                .key(format!("{}.pdf", job.job_id))
-                .body(pdf.into())
-                .send()
-                .await
-        };
-
-        info!("Successfully uploaded PDF for job {}", job.job_id);
+        
+        results.push(job_result);
     }
 
-    // Return OK to acknowledge processing of all messages
-    Ok(())
+    // Create response
+    let response = BatchResponse {
+        results,
+        summary: BatchSummary {
+            total: success_count + failed_count,
+            success: success_count,
+            failed: failed_count,
+        },
+    };
+
+    info!(
+        "Batch processing complete: {} total, {} success, {} failed",
+        response.summary.total, response.summary.success, response.summary.failed
+    );
+
+    Ok(json!(response))
 }
 
 #[tokio::main]

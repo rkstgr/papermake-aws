@@ -32,15 +32,10 @@ module "pdf_service" {
   templates_bucket_name = "papermake-templates-dev"
   results_bucket_name = "papermake-results-dev"
 
-  # SQS queue configuration
-  queue_name = "pdf-render-queue-dev"
-
   # Lambda configurations
-  request_handler_memory = 128
-  request_handler_timeout = 30  # 30 seconds
   
-  renderer_memory = 256 # can be increased to 1024 for longer documents
-  renderer_timeout = 300  # 5 minutes
+  renderer_memory = 512 # increased for batch processing
+  renderer_timeout = 900  # 15 minutes for larger batches
 
   
   # OpenTelemetry configuration
