@@ -1,11 +1,6 @@
-output "api_endpoint" {
-  description = "The URL of the API Gateway endpoint"
-  value       = "${aws_apigatewayv2_stage.main.invoke_url}"
-}
-
-output "render_route" {
-  description = "The route path for rendering PDFs"
-  value       = "POST /render"
+output "function_url" {
+  description = "The HTTPS URL of the Lambda function"
+  value       = aws_lambda_function_url.request_handler.function_url
 }
 
 output "templates_bucket" {

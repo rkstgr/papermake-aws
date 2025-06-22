@@ -114,44 +114,18 @@ resource "aws_cloudwatch_metric_alarm" "queue_depth_alarm" {
   }
 }
 
-# API Gateway
-resource "aws_apigatewayv2_api" "main" {
-  name          = var.api_name
-  protocol_type = "HTTP"
-  description   = "PDF Renderer API"
-}
+# Lambda Function URL for Request Handler
+resource "aws_lambda_function_url" "request_handler" {
+  function_name      = aws_lambda_function.request_handler.function_name
+  authorization_type = "NONE"
 
-resource "aws_apigatewayv2_stage" "main" {
-  api_id      = aws_apigatewayv2_api.main.id
-  name        = var.api_stage
-  auto_deploy = true
-}
-
-# API Gateway Integration with Request Handler Lambda
-resource "aws_apigatewayv2_integration" "request_handler" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-
-  connection_type     = "INTERNET"
-  description         = "Request Handler Lambda integration"
-  integration_method  = "POST"
-  integration_uri     = aws_lambda_function.request_handler.invoke_arn
-}
-
-# API Gateway Route
-resource "aws_apigatewayv2_route" "render_pdf" {
-  api_id    = aws_apigatewayv2_api.main.id
-  route_key = "POST /render"
-  target    = "integrations/${aws_apigatewayv2_integration.request_handler.id}"
-}
-
-# Request Handler Lambda Permission for API Gateway
-resource "aws_lambda_permission" "api_gw" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.request_handler.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+  cors {
+    allow_credentials = false
+    allow_methods     = ["POST"]
+    allow_origins     = ["*"]
+    expose_headers    = ["keep-alive", "date"]
+    max_age          = 86400
+  }
 }
 
 # Lambda Event Source Mapping for Renderer

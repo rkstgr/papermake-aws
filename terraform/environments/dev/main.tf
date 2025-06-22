@@ -42,9 +42,6 @@ module "pdf_service" {
   renderer_memory = 256 # can be increased to 1024 for longer documents
   renderer_timeout = 300  # 5 minutes
 
-  # API Gateway configuration
-  api_name = "pdf-renderer-api-dev"
-  api_stage = "v1"
   
   # OpenTelemetry configuration
   otlp_endpoint = var.otlp_endpoint

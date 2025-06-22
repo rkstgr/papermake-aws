@@ -47,15 +47,6 @@ variable "renderer_timeout" {
   default     = 300
 }
 
-variable "api_name" {
-  description = "Name of the API Gateway"
-  type        = string
-}
-
-variable "api_stage" {
-  description = "Stage name for the API Gateway"
-  type        = string
-}
 
 variable "otlp_endpoint" {
   description = "OpenTelemetry OTLP endpoint for tracing"
