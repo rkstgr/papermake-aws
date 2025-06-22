@@ -64,13 +64,17 @@ class LoadTester:
                 end_time = time.time()
                 batch_latency = end_time - start_time
 
-                if response.status == 202:
+                if response.status == 200:
                     batch_results = []
-                    for job_id in response_data.get("job_ids", []):
-                        self.job_ids.append(job_id)
-                        self.latencies.append(batch_latency / self.config.batch_size)
-                        self.successful_requests += 1
-                        batch_results.append(True)
+                    # New API returns results array with job_id and s3_key
+                    for result in response_data.get("results", []):
+                        if result.get("status") == "success":
+                            self.job_ids.append(result["job_id"])
+                            self.latencies.append(batch_latency / self.config.batch_size)
+                            self.successful_requests += 1
+                            batch_results.append(True)
+                        else:
+                            batch_results.append(False)
 
                     if len(self.job_ids) % 100 == 0:
                         progress_msg = (
@@ -81,8 +85,9 @@ class LoadTester:
                             print(progress_msg)
                         self.logger.info(progress_msg)
 
+                    success_count = sum(1 for result in response_data.get("results", []) if result.get("status") == "success")
                     self.logger.debug(
-                        f"Batch request starting at {batch_start} succeeded with {len(response_data.get('job_ids', []))} job_ids, "
+                        f"Batch request starting at {batch_start} succeeded with {success_count} successful results, "
                         f"latency: {batch_latency:.4f}s"
                     )
                     return batch_results
