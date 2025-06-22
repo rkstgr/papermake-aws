@@ -55,4 +55,9 @@ variable "api_name" {
 variable "api_stage" {
   description = "Stage name for the API Gateway"
   type        = string
+}
+
+variable "otlp_endpoint" {
+  description = "OpenTelemetry OTLP endpoint for tracing"
+  type        = string
 } 

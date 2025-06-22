@@ -17,6 +17,11 @@ provider "aws" {
   region = "eu-central-1"  # Updated to match S3 bucket region
 }
 
+variable "otlp_endpoint" {
+  description = "OpenTelemetry OTLP endpoint for tracing"
+  type        = string
+}
+
 module "pdf_service" {
   source = "../../modules/pdf_service"
 
@@ -40,4 +45,7 @@ module "pdf_service" {
   # API Gateway configuration
   api_name = "pdf-renderer-api-dev"
   api_stage = "v1"
+  
+  # OpenTelemetry configuration
+  otlp_endpoint = var.otlp_endpoint
 } 

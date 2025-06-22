@@ -83,6 +83,7 @@ resource "aws_lambda_function" "renderer" {
       TEMPLATES_BUCKET = aws_s3_bucket.templates.id
       RESULTS_BUCKET   = aws_s3_bucket.results.id
       FONTS_DIR        = "fonts"
+      OTLP_ENDPOINT    = var.otlp_endpoint
     }
   }
 
