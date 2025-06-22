@@ -1,8 +1,8 @@
-use aws_lambda_events::{apigw::{ApiGatewayProxyRequest, ApiGatewayProxyResponse}, encodings::Body};
+use aws_lambda_events::lambda_function_urls::LambdaFunctionUrlRequest;
+use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
-use lambda_runtime::{service_fn, LambdaEvent, Error, run};
 
 #[derive(Deserialize)]
 struct RenderRequest {
@@ -33,9 +33,12 @@ async fn main() -> Result<(), Error> {
     run(service_fn(function_handler)).await
 }
 
-async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<ApiGatewayProxyResponse, Error> {
+async fn function_handler(event: LambdaEvent<LambdaFunctionUrlRequest>) -> Result<Value, Error> {
     // Parse request
-    let body = event.payload.body.ok_or_else(|| Error::from("Missing request body"))?;
+    let body = event
+        .payload
+        .body
+        .ok_or_else(|| Error::from("Missing request body"))?;
     let request: RenderRequest = serde_json::from_str(&body).map_err(|e| {
         eprintln!("Error parsing request body: {}", e);
         Error::from(format!("Invalid request format: {}", e))
@@ -45,7 +48,7 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
 
     let config = aws_config::load_from_env().await;
     let sqs_client = aws_sdk_sqs::Client::new(&config);
-    
+
     let mut job_ids = Vec::new();
     // Create job and send to SQS
     for job in request.jobs {
@@ -58,20 +61,16 @@ async fn function_handler(event: LambdaEvent<ApiGatewayProxyRequest>) -> Result<
         };
 
         // Send to SQS and return immediately
-        sqs_client.send_message()
-        .queue_url(&queue_url)
-        .message_body(serde_json::to_string(&job)?)
-        .send()
-        .await?;
+        sqs_client
+            .send_message()
+            .queue_url(&queue_url)
+            .message_body(serde_json::to_string(&job)?)
+            .send()
+            .await?;
 
         job_ids.push(job_id);
     }
-    
+
     // Return job ID immediately
-    Ok(ApiGatewayProxyResponse {
-        status_code: 202, // Accepted
-        body: Some(Body::Text(json!({"job_ids": job_ids, "status": "queued"}).to_string())),
-        is_base64_encoded: false,
-        ..Default::default()
-    })
+    Ok(json!({"job_ids": job_ids, "status": "queued"}))
 }
