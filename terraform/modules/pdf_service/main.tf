@@ -88,36 +88,8 @@ resource "aws_lambda_function" "renderer" {
   }
 
   tags = local.common_tags
-  publish = true
 }
 
-# Auto-scaling for the renderer Lambda based on SQS queue metrics
-resource "aws_appautoscaling_target" "lambda_target" {
-  max_capacity       = 1000  # Maximum number of concurrent Lambda instances
-  min_capacity       = 5     # Minimum number of concurrent Lambda instances
-  resource_id        = "function:${aws_lambda_function.renderer.function_name}:${aws_lambda_function.renderer.version}"
-  scalable_dimension = "lambda:function:ProvisionedConcurrency"
-  service_namespace  = "lambda"
-}
-
-# Scale up policy - Add more provisioned concurrency when queue depth increases
-resource "aws_appautoscaling_policy" "scale_up" {
-  name               = "scale-up-${var.environment}"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.lambda_target.resource_id
-  scalable_dimension = aws_appautoscaling_target.lambda_target.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.lambda_target.service_namespace
-
-  target_tracking_scaling_policy_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "LambdaProvisionedConcurrencyUtilization"
-    }
-    
-    target_value       = 0.75  # Try to keep utilization around 75%
-    scale_in_cooldown  = 120   # Wait 2 minutes before scaling in
-    scale_out_cooldown = 30    # Only wait 30 seconds before scaling out
-  }
-}
 
 # SNS topic for scaling alerts
 resource "aws_sns_topic" "scaling_alerts" {
@@ -259,9 +231,7 @@ resource "aws_cloudwatch_dashboard" "pdf_service" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", aws_lambda_function.renderer.function_name],
-            ["AWS/Lambda", "ProvisionedConcurrentExecutions", "FunctionName", aws_lambda_function.renderer.function_name],
-            ["AWS/Lambda", "ProvisionedConcurrencyUtilization", "FunctionName", aws_lambda_function.renderer.function_name]
+            ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", aws_lambda_function.renderer.function_name]
           ]
           view    = "timeSeries"
           stacked = false
