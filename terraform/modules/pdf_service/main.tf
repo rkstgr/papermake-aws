@@ -35,12 +35,14 @@ resource "aws_lambda_function" "renderer" {
   source_code_hash = filebase64sha256("../../../lambda_functions/renderer/pdf_renderer.zip")
 
   environment {
-    variables = {
-      TEMPLATES_BUCKET = aws_s3_bucket.templates.id
-      RESULTS_BUCKET   = aws_s3_bucket.results.id
-      FONTS_DIR        = "fonts"
-      OTLP_ENDPOINT    = var.otlp_endpoint
-    }
+    variables = merge(
+      {
+        TEMPLATES_BUCKET = aws_s3_bucket.templates.id
+        RESULTS_BUCKET   = aws_s3_bucket.results.id
+        FONTS_DIR        = "fonts"
+      },
+      var.otlp_endpoint != "" ? { OTLP_ENDPOINT = var.otlp_endpoint } : {}
+    )
   }
 
   tags = local.common_tags

@@ -33,6 +33,7 @@ variable "renderer_timeout" {
 
 
 variable "otlp_endpoint" {
-  description = "OpenTelemetry OTLP endpoint for tracing"
+  description = "OpenTelemetry OTLP endpoint for tracing (optional — omit to disable OTLP export)"
   type        = string
+  default     = ""
 } 
