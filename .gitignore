@@ -5,7 +5,6 @@ Cargo.lock
 
 # Lambda deployment package
 pdf_renderer.zip
-pdf_request_handler.zip
 
 # IDE and editor files
 .idea/
