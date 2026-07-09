@@ -380,37 +380,40 @@ async fn function_handler(event: LambdaEvent<LambdaFunctionUrlRequest>) -> Resul
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    // Initialize OpenTelemetry exporter
-    let otlp_endpoint =
-        env::var("OTLP_ENDPOINT").expect("OTLP_ENDPOINT environment variable not set");
+    // Initialize OpenTelemetry if OTLP_ENDPOINT is configured
+    let (telemetry_layer, tracer_provider) = match env::var("OTLP_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(otlp_endpoint) => {
+            let exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_http()
+                .with_endpoint(otlp_endpoint)
+                .build()
+                .expect("Failed to create OTLP exporter");
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_http()
-        .with_endpoint(otlp_endpoint)
-        .build()
-        .expect("Failed to create OTLP exporter");
+            let resource = Resource::builder()
+                .with_service_name("pdf-renderer-lambda")
+                .with_attribute(KeyValue::new("service.version", "0.1.0"))
+                .build();
 
-    // Create resource with service information
-    let resource = Resource::builder()
-        .with_service_name("pdf-renderer-lambda")
-        .with_attribute(KeyValue::new("service.version", "0.1.0"))
-        .build();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter)
+                .with_resource(resource)
+                .build();
 
-    // Create tracer provider
-    let tracer_provider = SdkTracerProvider::builder()
-        .with_simple_exporter(exporter)
-        .with_resource(resource)
-        .build();
+            let tracer = provider.tracer("pdf-renderer-lambda");
+            global::set_tracer_provider(provider.clone());
 
-    // Get tracer
-    let tracer = tracer_provider.tracer("pdf-renderer-lambda");
+            (
+                Some(tracing_opentelemetry::layer().with_tracer(tracer)),
+                Some(provider),
+            )
+        }
+        None => (None, None),
+    };
 
-    // Set global tracer provider
-    global::set_tracer_provider(tracer_provider.clone());
-
-    // Initialize tracing subscriber with OpenTelemetry layer
-    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
+    // Option<Layer> implements Layer (no-op when None)
     let subscriber = Registry::default()
         .with(
             tracing_subscriber::fmt::layer()
@@ -418,7 +421,7 @@ async fn main() -> Result<(), Error> {
                 .without_time(),
         )
         .with(tracing_subscriber::filter::LevelFilter::INFO)
-        .with(telemetry);
+        .with(telemetry_layer);
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
 
@@ -430,8 +433,10 @@ async fn main() -> Result<(), Error> {
     let result = run(service_fn(function_handler)).await;
 
     // Shutdown the tracer to ensure all spans are exported
-    if let Err(e) = tracer_provider.shutdown() {
-        eprintln!("Error shutting down tracer provider: {:?}", e);
+    if let Some(provider) = tracer_provider {
+        if let Err(e) = provider.shutdown() {
+            eprintln!("Error shutting down tracer provider: {:?}", e);
+        }
     }
 
     result

@@ -18,8 +18,9 @@ provider "aws" {
 }
 
 variable "otlp_endpoint" {
-  description = "OpenTelemetry OTLP endpoint for tracing"
+  description = "OpenTelemetry OTLP endpoint for tracing (optional — omit to disable OTLP export)"
   type        = string
+  default     = ""
 }
 
 module "pdf_service" {
