@@ -1,10 +1,12 @@
 # Rust build artifacts
 target/
 **/*.rs.bk
-Cargo.lock
 
 # Lambda deployment package
 pdf_renderer.zip
+
+# Local cargo overrides (e.g. papermake path patch)
+/.cargo/
 
 # IDE and editor files
 .idea/
