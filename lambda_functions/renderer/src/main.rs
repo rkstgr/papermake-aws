@@ -229,7 +229,7 @@ async fn initialize_resources() -> Arc<SharedResources> {
         env::var("RESULTS_BUCKET").expect("RESULTS_BUCKET environment variable not set");
 
     // Initialize AWS client
-    let config = aws_config::load_from_env().await;
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
     let s3_client = aws_sdk_s3::Client::new(&config);
 
     // Create and return resources
